@@ -140,6 +140,223 @@ export const notifyDriverInTransitHeartbeat = async (allocation) => {
   });
 };
 
+const notifyDriverSafetyAlert = async ({
+  allocation,
+  title,
+  message,
+  safetyAlertType,
+  detectedAt = new Date(),
+}) => {
+  if (!['pending', 'assigned', 'in_transit'].includes(allocation?.status)) {
+    return [];
+  }
+
+  const managerId = getId(allocation?.managerId);
+  const data = {
+    entityType: 'driver_allocation',
+    entityId: allocation.id,
+    vehicleId: getId(allocation?.vehicleId),
+    driverId: getId(allocation?.driverId),
+    status: allocation?.status,
+    currentLocation: allocation?.currentLocation ?? null,
+    routeProgress: allocation?.routeProgress ?? null,
+    safetyAlertType,
+    detectedAt,
+  };
+  const tasks = [
+    createNotificationsForRoles({
+      roles: ADMIN_APPROVER_ROLES,
+      type: 'alert',
+      title,
+      message,
+      data,
+    }),
+  ];
+
+  if (managerId) {
+    tasks.push(
+      createNotificationsForUsers({
+        userIds: [managerId],
+        type: 'alert',
+        title,
+        message,
+        data,
+      })
+    );
+  }
+
+  return Promise.all(tasks);
+};
+
+export const notifyDriverGpsConnectionLost = async (allocation, details = {}) => {
+  const driverName = getFullName(allocation?.driverId) || 'The driver';
+  const vehicleLabel = getVehicleLabel(allocation?.vehicleId);
+  const staleMinutes = Math.max(1, Math.round((details.staleSeconds ?? 0) / 60));
+
+  return notifyDriverSafetyAlert({
+    allocation,
+    title: 'Driver GPS connection lost',
+    message: `${driverName} has not sent a GPS update for ${vehicleLabel} in about ${staleMinutes} minute(s).`,
+    safetyAlertType: 'gps_connection_lost',
+    detectedAt: details.detectedAt,
+  });
+};
+
+export const notifyDriverEtaOverdue = async (allocation, details = {}) => {
+  const driverName = getFullName(allocation?.driverId) || 'The driver';
+  const vehicleLabel = getVehicleLabel(allocation?.vehicleId);
+  const overdueMinutes = Math.max(1, Math.round(details.overdueMinutes ?? 0));
+
+  return notifyDriverSafetyAlert({
+    allocation,
+    title: 'Driver trip overdue',
+    message: `${driverName} is overdue for ${vehicleLabel} by about ${overdueMinutes} minute(s) compared with the expected arrival time.`,
+    safetyAlertType: 'eta_overdue',
+    detectedAt: details.detectedAt,
+  });
+};
+
+export const notifyDriverShipmentStartOverdue = async (allocation, details = {}) => {
+  const driverName = getFullName(allocation?.driverId) || 'The driver';
+  const vehicleLabel = getVehicleLabel(allocation?.vehicleId);
+  const overdueMinutes = Math.max(1, Math.round(details.overdueMinutes ?? 0));
+
+  return notifyDriverSafetyAlert({
+    allocation,
+    title: 'Scheduled shipment not started',
+    message: `${driverName} has not started the scheduled shipment for ${vehicleLabel}. It is overdue by about ${overdueMinutes} minute(s).`,
+    safetyAlertType: 'shipment_start_overdue',
+    detectedAt: details.detectedAt,
+  });
+};
+
+export const notifyDriverStopTripRequested = async (allocation) => {
+  if (allocation?.status !== 'in_transit') {
+    return [];
+  }
+
+  const managerId = getId(allocation?.managerId);
+  const driverName = getFullName(allocation?.driverId) || 'The driver';
+  const vehicleLabel = getVehicleLabel(allocation?.vehicleId);
+  const reason = allocation?.stopRequest?.reason?.trim();
+  const title = 'Driver requested trip stop';
+  const message = `${driverName} requested approval to stop the trip for ${vehicleLabel}${
+    reason ? `: ${reason}` : '.'
+  }`;
+  const data = {
+    entityType: 'driver_allocation',
+    entityId: allocation.id,
+    vehicleId: getId(allocation?.vehicleId),
+    driverId: getId(allocation?.driverId),
+    status: allocation?.status,
+    stopRequestStatus: allocation?.stopRequest?.status ?? 'pending',
+    stopRequestReason: reason ?? '',
+    currentLocation: allocation?.currentLocation ?? null,
+  };
+  const tasks = [
+    createNotificationsForRoles({
+      roles: ADMIN_APPROVER_ROLES,
+      type: 'alert',
+      title,
+      message,
+      data,
+    }),
+  ];
+
+  if (managerId) {
+    tasks.push(
+      createNotificationsForUsers({
+        userIds: [managerId],
+        type: 'alert',
+        title,
+        message,
+        data,
+      })
+    );
+  }
+
+  return Promise.all(tasks);
+};
+
+export const notifyDriverStopTripReviewed = async ({
+  allocation,
+  approved,
+}) => {
+  const driverId = getId(allocation?.driverId);
+
+  if (!driverId) {
+    return [];
+  }
+
+  const vehicleLabel = getVehicleLabel(allocation?.vehicleId);
+  const notes = allocation?.stopRequest?.reviewNotes?.trim();
+
+  return createNotificationsForUsers({
+    userIds: [driverId],
+    type: approved ? 'driver' : 'alert',
+    title: approved ? 'Trip stop approved' : 'Trip stop rejected',
+    message: approved
+      ? `${vehicleLabel} trip stop was approved. The dispatch is now cancelled.${
+          notes ? ` Note: ${notes}` : ''
+        }`
+      : `${vehicleLabel} trip stop was rejected. Continue the trip unless admin gives new instructions.${
+          notes ? ` Note: ${notes}` : ''
+        }`,
+    data: {
+      entityType: 'driver_allocation',
+      entityId: allocation.id,
+      vehicleId: getId(allocation?.vehicleId),
+      status: allocation?.status,
+      stopRequestStatus: allocation?.stopRequest?.status,
+    },
+  });
+};
+
+export const notifyDriverCompletionReviewRequested = async (allocation) => {
+  if (allocation?.status !== 'in_transit') {
+    return [];
+  }
+
+  const managerId = getId(allocation?.managerId);
+  const driverName = getFullName(allocation?.driverId) || 'The driver';
+  const vehicleLabel = getVehicleLabel(allocation?.vehicleId);
+  const title = 'Driver requested trip completion review';
+  const message = `${driverName} requested admin/supervisor review before completing the trip for ${vehicleLabel}.`;
+  const data = {
+    entityType: 'driver_allocation',
+    entityId: allocation.id,
+    vehicleId: getId(allocation?.vehicleId),
+    driverId: getId(allocation?.driverId),
+    status: allocation?.status,
+    currentLocation: allocation?.currentLocation ?? null,
+    routeProgress: allocation?.routeProgress ?? null,
+    reviewType: 'completion_request',
+  };
+  const tasks = [
+    createNotificationsForRoles({
+      roles: ADMIN_APPROVER_ROLES,
+      type: 'alert',
+      title,
+      message,
+      data,
+    }),
+  ];
+
+  if (managerId) {
+    tasks.push(
+      createNotificationsForUsers({
+        userIds: [managerId],
+        type: 'alert',
+        title,
+        message,
+        data,
+      })
+    );
+  }
+
+  return Promise.all(tasks);
+};
+
 const didTestDriveScheduleChange = (previousBooking, nextBooking) =>
   !idsAreEqual(previousBooking?.vehicleId, nextBooking?.vehicleId) ||
   hasTextChanged(previousBooking?.scheduledDate, nextBooking?.scheduledDate) ||

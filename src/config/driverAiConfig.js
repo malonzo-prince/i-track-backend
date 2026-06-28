@@ -10,8 +10,11 @@ export const DRIVER_AI_EVENT_TYPES = {
 export const DRIVER_AI_THRESHOLDS = {
   gps: {
     maxAcceptedAccuracyMeters: 35,
+    maxAcceptedAccuracyForStorageMeters: 100,
     maxJumpSpeedKph: 180,
     minTimeDeltaSeconds: 1,
+    maxClientTimestampSkewSeconds: 120,
+    maxClientLocationAgeSeconds: 300,
   },
   overspeeding: {
     minSpeedKph: 60,
@@ -50,6 +53,15 @@ export const DRIVER_AI_THRESHOLDS = {
     maxRecentPoints: 60,
     maxBehaviorEvents: 100,
     maxAlertHistory: 50,
+  },
+  safetyMonitor: {
+    scanIntervalSeconds: 60,
+    gpsLostAfterSeconds: 300,
+    gpsMissingAfterTripStartSeconds: 120,
+    etaGraceMinutes: 10,
+    etaGraceRatio: 0.25,
+    shipmentStartGraceMinutes: 10,
+    alertCooldownSeconds: 900,
   },
 };
 

@@ -11,6 +11,7 @@ import { User } from './models/User.js';
 import { Vehicle } from './models/Vehicle.js';
 import { initializePreparationEtaModel } from './services/preparationEtaService.js';
 import { ensureSeedData } from './services/seedService.js';
+import { startDriverSafetyMonitor } from './services/driverSafetyMonitorService.js';
 
 const bootstrapServer = async () => {
   const models = [
@@ -35,6 +36,7 @@ const bootstrapServer = async () => {
 
   app.listen(env.port, () => {
     console.log(`I-TRACK backend listening on port ${env.port}.`);
+    startDriverSafetyMonitor();
 
     if (ensuredCollections.length > 0) {
       console.log(

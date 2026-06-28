@@ -1,4 +1,5 @@
 import { ACTIVE_ALLOCATION_STATUSES } from '../constants/enums.js';
+import { DRIVER_AI_THRESHOLDS } from '../config/driverAiConfig.js';
 import { DriverAllocation } from '../models/DriverAllocation.js';
 import { User } from '../models/User.js';
 import { Vehicle } from '../models/Vehicle.js';
@@ -10,9 +11,12 @@ import {
   notifyDriverAllocationDeleted,
   notifyDriverInTransitHeartbeat,
   notifyDriverAllocationUpdated,
+  notifyDriverStopTripRequested,
+  notifyDriverStopTripReviewed,
 } from '../services/notificationDispatchers.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess } from '../utils/apiResponse.js';
+import { scanDriverSafetyAlerts } from '../services/driverSafetyMonitorService.js';
 
 const dispatchNotificationTask = (task, label) => {
   void task.catch((error) => {
@@ -130,6 +134,22 @@ const parseFiniteNumber = (value, label) => {
   return parsedValue;
 };
 
+const parseOptionalDate = (value, label) => {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  const parsedDate = new Date(value);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    const error = new Error(`${label} must be a valid date and time.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return parsedDate;
+};
+
 const buildValidatedLiveLocationPayload = (value) => {
   if (!value || typeof value !== 'object') {
     const error = new Error('Driver live location is required.');
@@ -171,6 +191,35 @@ const buildValidatedLiveLocationPayload = (value) => {
 
   if (Number.isNaN(timestampValue.getTime())) {
     const error = new Error('Timestamp must be a valid date.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const now = Date.now();
+  const timestampTime = timestampValue.getTime();
+  const maxFutureSkewMs =
+    DRIVER_AI_THRESHOLDS.gps.maxClientTimestampSkewSeconds * 1000;
+  const maxAgeMs = DRIVER_AI_THRESHOLDS.gps.maxClientLocationAgeSeconds * 1000;
+
+  if (timestampTime - now > maxFutureSkewMs) {
+    const error = new Error('GPS timestamp is too far in the future.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (now - timestampTime > maxAgeMs) {
+    const error = new Error('GPS timestamp is too old. Send a fresh location update.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (
+    accuracyValue !== null &&
+    accuracyValue > DRIVER_AI_THRESHOLDS.gps.maxAcceptedAccuracyForStorageMeters
+  ) {
+    const error = new Error(
+      `GPS accuracy is too low. Accuracy must be within ${DRIVER_AI_THRESHOLDS.gps.maxAcceptedAccuracyForStorageMeters} meters.`
+    );
     error.statusCode = 400;
     throw error;
   }
@@ -325,10 +374,42 @@ const prepareAllocationPayload = async (payload, currentAllocationId = null) => 
     managerId: managerId ?? null,
     vehicleId: vehicle.id,
     driverId: driver.id,
+    scheduledShipmentAt: parseOptionalDate(
+      payload.scheduledShipmentAt,
+      'Vehicle shipment date'
+    ),
   };
 };
 
+const requireInTransitAllocationForDriverAction = async (id) => {
+  const allocation = await DriverAllocation.findById(id);
+
+  if (!allocation) {
+    const error = new Error('Driver allocation not found.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (allocation.status !== IN_TRANSIT_ALLOCATION_STATUS) {
+    const error = new Error('This action is only available while the trip is in transit.');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  return allocation;
+};
+
+const normalizeActionText = (value, fallback = '') =>
+  String(value ?? fallback).trim().slice(0, 500);
+
 export const listDriverAllocations = asyncHandler(async (req, res) => {
+  await scanDriverSafetyAlerts().catch((error) => {
+    console.warn(
+      '[driver-safety-monitor] Unable to scan before listing allocations:',
+      error instanceof Error ? error.message : error
+    );
+  });
+
   const allocations = await DriverAllocation.find(buildAllocationFilters(req.query))
     .populate(allocationPopulation)
     .sort({ createdAt: -1 });
@@ -525,6 +606,138 @@ export const requestDriverAllocationCompletion = asyncHandler(async (req, res) =
   sendSuccess(res, {
     data: allocation,
     message: 'Admin/supervisor notified successfully.',
+  });
+});
+
+export const requestDriverAllocationStop = asyncHandler(async (req, res) => {
+  const existingAllocation = await requireInTransitAllocationForDriverAction(req.params.id);
+
+  if (existingAllocation.stopRequest?.status === 'pending') {
+    const error = new Error('A stop trip request is already pending review.');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  await DriverAllocation.findByIdAndUpdate(
+    req.params.id,
+    {
+      stopRequest: {
+        status: 'pending',
+        reason: normalizeActionText(
+          req.body?.reason,
+          'Driver requested admin approval to stop the trip.'
+        ),
+        requestedAt: new Date(),
+        reviewedAt: null,
+        reviewedBy: null,
+        reviewNotes: '',
+      },
+    },
+    {
+      new: true,
+      runValidators: true,
+    }
+  );
+
+  const savedAllocation = await requireAllocation(req.params.id);
+
+  dispatchNotificationTask(
+    notifyDriverStopTripRequested(savedAllocation),
+    'driver stop trip request'
+  );
+
+  sendSuccess(res, {
+    data: savedAllocation,
+    message: 'Stop trip request sent successfully.',
+  });
+});
+
+export const reviewDriverAllocationStopRequest = asyncHandler(async (req, res) => {
+  const action = normalizeActionText(req.body?.action).toLowerCase();
+
+  if (!['approve', 'reject'].includes(action)) {
+    const error = new Error('Action must be approve or reject.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const previousAllocation = await requireAllocation(req.params.id);
+  const existingAllocation = await DriverAllocation.findById(req.params.id);
+
+  if (!existingAllocation) {
+    const error = new Error('Driver allocation not found.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (existingAllocation.stopRequest?.status !== 'pending') {
+    const error = new Error('No pending stop trip request is available for review.');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const approved = action === 'approve';
+  const updatePayload = {
+    stopRequest: {
+      ...(existingAllocation.stopRequest?.toObject?.() ??
+        existingAllocation.stopRequest ??
+        {}),
+      status: approved ? 'approved' : 'rejected',
+      reviewedAt: new Date(),
+      reviewedBy: req.user?.id ?? req.body?.reviewedBy ?? null,
+      reviewNotes: normalizeActionText(req.body?.reviewNotes),
+    },
+  };
+
+  if (approved) {
+    updatePayload.status = 'cancelled';
+    updatePayload.endTime = new Date();
+    updatePayload.actualDuration = existingAllocation.startTime
+      ? Math.max(
+          1,
+          Math.round(
+            (updatePayload.endTime.getTime() -
+              new Date(existingAllocation.startTime).getTime()) /
+              60000
+          )
+        )
+      : existingAllocation.actualDuration;
+  }
+
+  await DriverAllocation.findByIdAndUpdate(req.params.id, updatePayload, {
+    new: true,
+    runValidators: true,
+  });
+
+  if (approved) {
+    await reconcileVehicleStatus(existingAllocation.vehicleId);
+  }
+
+  const savedAllocation = await requireAllocation(req.params.id);
+
+  dispatchNotificationTask(
+    notifyDriverStopTripReviewed({
+      allocation: savedAllocation,
+      approved,
+    }),
+    'driver stop trip review'
+  );
+
+  if (approved) {
+    dispatchNotificationTask(
+      notifyDriverAllocationUpdated({
+        previousAllocation,
+        nextAllocation: savedAllocation,
+      }),
+      'driver allocation stop approval update'
+    );
+  }
+
+  sendSuccess(res, {
+    data: savedAllocation,
+    message: approved
+      ? 'Stop trip request approved and trip cancelled.'
+      : 'Stop trip request rejected.',
   });
 });
 

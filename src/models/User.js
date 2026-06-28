@@ -133,6 +133,11 @@ const userSchema = new mongoose.Schema(
       default: true,
       index: true,
     },
+    mustChangePassword: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     passwordReset: {
       type: passwordResetSchema,
       select: false,

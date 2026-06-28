@@ -274,6 +274,7 @@ export const changePassword = asyncHandler(async (req, res) => {
   }
 
   user.passwordHash = await hashPassword(nextPassword);
+  user.mustChangePassword = false;
   await user.save();
 
   sendSuccess(res, {
@@ -357,6 +358,7 @@ export const resetPasswordWithOtp = asyncHandler(async (req, res) => {
   });
 
   user.passwordHash = await hashPassword(nextPassword);
+  user.mustChangePassword = false;
   clearPasswordResetState(user);
   await user.save();
 

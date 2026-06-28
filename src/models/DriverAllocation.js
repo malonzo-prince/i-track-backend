@@ -200,6 +200,43 @@ const driverScoreSchema = new mongoose.Schema(
   }
 );
 
+const stopRequestSchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      enum: ['none', 'pending', 'approved', 'rejected'],
+      default: 'none',
+      trim: true,
+    },
+    reason: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    requestedAt: {
+      type: Date,
+      default: null,
+    },
+    reviewedAt: {
+      type: Date,
+      default: null,
+    },
+    reviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    reviewNotes: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+  },
+  {
+    _id: false,
+  }
+);
+
 const aiStateSchema = new mongoose.Schema(
   {
     recentLocations: {
@@ -223,6 +260,18 @@ const aiStateSchema = new mongoose.Schema(
       default: null,
     },
     lastTransitHeartbeatNotifiedAt: {
+      type: Date,
+      default: null,
+    },
+    lastGpsLostNotifiedAt: {
+      type: Date,
+      default: null,
+    },
+    lastEtaOverdueNotifiedAt: {
+      type: Date,
+      default: null,
+    },
+    lastShipmentStartOverdueNotifiedAt: {
       type: Date,
       default: null,
     },
@@ -275,6 +324,11 @@ const driverAllocationSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    scheduledShipmentAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
     actualDuration: {
       type: Number,
       default: null,
@@ -312,6 +366,10 @@ const driverAllocationSchema = new mongoose.Schema(
     },
     driverScore: {
       type: driverScoreSchema,
+      default: () => ({}),
+    },
+    stopRequest: {
+      type: stopRequestSchema,
       default: () => ({}),
     },
     notes: {

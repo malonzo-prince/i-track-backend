@@ -94,6 +94,17 @@ const sendEmailJsTemplate = async ({
   throw buildEmailJsError(response, responseText, contextLabel);
 };
 
+const getClientLoginUrl = () => {
+  const clientOrigin = String(env.clientOrigin ?? '').trim();
+  const fallbackOrigin = 'http://localhost:3000';
+  const origin =
+    clientOrigin && clientOrigin !== '*'
+      ? clientOrigin.replace(/\/+$/, '')
+      : fallbackOrigin;
+
+  return `${origin}/login`;
+};
+
 export const sendPasswordResetOtpEmail = async ({
   toEmail,
   toName,
@@ -149,10 +160,13 @@ export const sendUserAccountCredentialsEmail = async ({
       temporary_password: temporaryPassword,
       generated_password: temporaryPassword,
       password: temporaryPassword,
+      login_url: getClientLoginUrl(),
+      login_link: getClientLoginUrl(),
+      redirect_url: getClientLoginUrl(),
       support_email: env.emailjsSupportEmail ?? '',
       reply_to: env.emailjsSupportEmail ?? '',
       subject: `${env.emailjsAppName} account credentials`,
       headline: `Your ${env.emailjsAppName} account is ready`,
-      message: `Your ${env.emailjsAppName} account has been created.\n\nSign in email: ${toEmail}\nTemporary password: ${temporaryPassword}\nRole: ${roleLabel}\n\nFor security, please change your password after your first sign-in.`,
+      message: `Your ${env.emailjsAppName} account has been created.\n\nSign in link: ${getClientLoginUrl()}\nSign in email: ${toEmail}\nTemporary password: ${temporaryPassword}\nRole: ${roleLabel}\n\nFor security, please change your password after your first sign-in.`,
     },
   });

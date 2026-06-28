@@ -6,6 +6,8 @@ import {
   getDriverAllocationById,
   listDriverAllocations,
   requestDriverAllocationCompletion,
+  requestDriverAllocationStop,
+  reviewDriverAllocationStopRequest,
   updateDriverAllocation,
   updateDriverAllocationLiveLocation,
 } from '../controllers/driverAllocationsController.js';
@@ -16,6 +18,8 @@ router.get('/', listDriverAllocations);
 router.post('/', createDriverAllocation);
 router.patch('/:id/live-location', updateDriverAllocationLiveLocation);
 router.post('/:id/completion-request', requestDriverAllocationCompletion);
+router.post('/:id/stop-request', requestDriverAllocationStop);
+router.patch('/:id/stop-request', reviewDriverAllocationStopRequest);
 router.get('/:id', getDriverAllocationById);
 router.patch('/:id', updateDriverAllocation);
 router.delete('/:id', deleteDriverAllocation);
